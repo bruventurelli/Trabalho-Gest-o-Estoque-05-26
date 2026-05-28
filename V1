@@ -1,0 +1,318 @@
+
+# =============================================================================
+#  SISTEMA DE GESTÃO DE ESTOQUE
+#  Projeto Acadêmico – Programação Estruturada em Python
+# =============================================================================
+ 
+# ── Estrutura de dados principal ──────────────────────────────────────────────
+# Dicionário global que armazena todos os produtos.
+# Chave  : ID do produto (inteiro, gerado automaticamente)
+# Valor  : dicionário com os dados do produto
+estoque = {}
+proximo_id = 1          # contador para gerar IDs únicos
+ 
+ 
+# =============================================================================
+#  FUNÇÕES OBRIGATÓRIAS
+# =============================================================================
+ 
+def cadastrar_produto(nome, categoria, preco, quantidade):
+    """Registra novo produto no sistema.
+ 
+    Parâmetros:
+        nome       (str)   – nome do produto
+        categoria  (str)   – categoria do produto
+        preco      (float) – preço unitário
+        quantidade (int)   – quantidade inicial em estoque
+ 
+    Retorna:
+        int – ID do produto cadastrado, ou None em caso de erro
+    """
+    global proximo_id
+ 
+    # Validações básicas
+    if not nome.strip():
+        print("  [ERRO] O nome do produto não pode ser vazio.")
+        return None
+    if not categoria.strip():
+        print("  [ERRO] A categoria não pode ser vazia.")
+        return None
+    if preco < 0:
+        print("  [ERRO] O preço não pode ser negativo.")
+        return None
+    if quantidade < 0:
+        print("  [ERRO] A quantidade inicial não pode ser negativa.")
+        return None
+ 
+    produto_id = proximo_id
+    estoque[produto_id] = {
+        "nome":       nome.strip(),
+        "categoria":  categoria.strip(),
+        "preco":      round(preco, 2),
+        "quantidade": int(quantidade),
+    }
+    proximo_id += 1
+ 
+    print(f"\n  [OK] Produto '{nome}' cadastrado com sucesso! (ID: {produto_id})")
+    return produto_id
+ 
+ 
+def registrar_entrada(produto_id, quantidade):
+    """Adiciona itens ao estoque.
+ 
+    Parâmetros:
+        produto_id (int) – ID do produto
+        quantidade (int) – quantidade a adicionar (deve ser > 0)
+    """
+    if produto_id not in estoque:
+        print(f"  [ERRO] Produto ID {produto_id} não encontrado no sistema.")
+        return
+ 
+    if quantidade <= 0:
+        print("  [ERRO] A quantidade de entrada deve ser maior que zero.")
+        return
+ 
+    estoque[produto_id]["quantidade"] += quantidade
+    novo_saldo = estoque[produto_id]["quantidade"]
+    nome = estoque[produto_id]["nome"]
+ 
+    print(f"\n  [OK] Entrada registrada: +{quantidade} unidade(s) de '{nome}'.")
+    print(f"       Saldo atual: {novo_saldo} unidade(s).")
+ 
+ 
+def registrar_saida(produto_id, quantidade):
+    """Remove itens do estoque.
+ 
+    Parâmetros:
+        produto_id (int) – ID do produto
+        quantidade (int) – quantidade a remover (deve ser > 0)
+    """
+    if produto_id not in estoque:
+        print(f"  [ERRO] Produto ID {produto_id} não encontrado no sistema.")
+        return
+ 
+    if quantidade <= 0:
+        print("  [ERRO] A quantidade de saída deve ser maior que zero.")
+        return
+ 
+    saldo_atual = estoque[produto_id]["quantidade"]
+    if quantidade > saldo_atual:
+        print(f"  [ERRO] Estoque insuficiente. Disponível: {saldo_atual} unidade(s).")
+        return
+ 
+    estoque[produto_id]["quantidade"] -= quantidade
+    novo_saldo = estoque[produto_id]["quantidade"]
+    nome = estoque[produto_id]["nome"]
+ 
+    print(f"\n  [OK] Saída registrada: -{quantidade} unidade(s) de '{nome}'.")
+    print(f"       Saldo atual: {novo_saldo} unidade(s).")
+ 
+ 
+def consultar_estoque(produto_id):
+    """Verifica saldo atual e dados do produto.
+ 
+    Parâmetros:
+        produto_id (int) – ID do produto
+ 
+    Retorna:
+        dict – dados do produto, ou None se não encontrado
+    """
+    if produto_id not in estoque:
+        print(f"  [ERRO] Produto ID {produto_id} não encontrado no sistema.")
+        return None
+ 
+    p = estoque[produto_id]
+    print("\n  " + "─" * 40)
+    print(f"  Produto ID : {produto_id}")
+    print(f"  Nome       : {p['nome']}")
+    print(f"  Categoria  : {p['categoria']}")
+    print(f"  Preço      : R$ {p['preco']:.2f}")
+    print(f"  Quantidade : {p['quantidade']} unidade(s)")
+    print("  " + "─" * 40)
+ 
+    return p
+ 
+ 
+def alertar_estoque_baixo(limite):
+    """Identifica produtos com estoque crítico (abaixo do limite).
+ 
+    Parâmetros:
+        limite (int) – quantidade mínima aceitável
+    """
+    if limite < 0:
+        print("  [ERRO] O limite não pode ser negativo.")
+        return
+ 
+    criticos = [
+        (pid, p) for pid, p in estoque.items()
+        if p["quantidade"] < limite
+    ]
+ 
+    if not criticos:
+        print(f"\n  [OK] Nenhum produto abaixo do limite de {limite} unidade(s).")
+        return
+ 
+    print(f"\n  ⚠  ALERTA – Produtos com estoque abaixo de {limite} unidade(s):")
+    print("  " + "─" * 50)
+    print(f"  {'ID':<6} {'Nome':<22} {'Categoria':<16} {'Qtd':>5}")
+    print("  " + "─" * 50)
+    for pid, p in criticos:
+        print(f"  {pid:<6} {p['nome']:<22} {p['categoria']:<16} {p['quantidade']:>5}")
+    print("  " + "─" * 50)
+    print(f"  Total de produtos críticos: {len(criticos)}")
+ 
+ 
+# =============================================================================
+#  FUNÇÕES AUXILIARES DE INTERFACE
+# =============================================================================
+ 
+def listar_todos():
+    """Exibe todos os produtos cadastrados."""
+    if not estoque:
+        print("\n  [INFO] Nenhum produto cadastrado ainda.")
+        return
+ 
+    print("\n  " + "─" * 65)
+    print(f"  {'ID':<6} {'Nome':<22} {'Categoria':<16} {'Preço':>10} {'Qtd':>6}")
+    print("  " + "─" * 65)
+    for pid, p in estoque.items():
+        print(
+            f"  {pid:<6} {p['nome']:<22} {p['categoria']:<16} "
+            f"R$ {p['preco']:>8.2f} {p['quantidade']:>6}"
+        )
+    print("  " + "─" * 65)
+    print(f"  Total de produtos: {len(estoque)}")
+ 
+ 
+def ler_inteiro(mensagem, minimo=None):
+    """Lê um inteiro do usuário com tratamento de erro."""
+    while True:
+        try:
+            valor = int(input(mensagem))
+            if minimo is not None and valor < minimo:
+                print(f"  [ERRO] Digite um valor maior ou igual a {minimo}.")
+                continue
+            return valor
+        except ValueError:
+            print("  [ERRO] Entrada inválida. Digite um número inteiro.")
+ 
+ 
+def ler_float(mensagem, minimo=None):
+    """Lê um número decimal do usuário com tratamento de erro."""
+    while True:
+        try:
+            valor = float(input(mensagem))
+            if minimo is not None and valor < minimo:
+                print(f"  [ERRO] Digite um valor maior ou igual a {minimo}.")
+                continue
+            return valor
+        except ValueError:
+            print("  [ERRO] Entrada inválida. Digite um número válido.")
+ 
+ 
+def cabecalho():
+    """Exibe o cabeçalho do sistema."""
+    print("\n" + "=" * 55)
+    print("        SISTEMA DE GESTÃO DE ESTOQUE")
+    print("=" * 55)
+ 
+ 
+def menu_principal():
+    """Exibe o menu e retorna a opção escolhida."""
+    print("\n  ┌─────────────────────────────────┐")
+    print("  │         MENU PRINCIPAL          │")
+    print("  ├─────────────────────────────────┤")
+    print("  │  1 – Cadastrar produto          │")
+    print("  │  2 – Registrar entrada          │")
+    print("  │  3 – Registrar saída            │")
+    print("  │  4 – Consultar produto          │")
+    print("  │  5 – Listar todos os produtos   │")
+    print("  │  6 – Alerta de estoque baixo    │")
+    print("  │  0 – Sair                       │")
+    print("  └─────────────────────────────────┘")
+    return input("  Escolha uma opção: ").strip()
+ 
+ 
+# =============================================================================
+#  DADOS DE EXEMPLO – carregados na inicialização
+# =============================================================================
+ 
+def carregar_dados_exemplo():
+    """Insere produtos de exemplo para facilitar os testes."""
+    cadastrar_produto("Arroz 5 kg",       "Alimentos",    12.90, 50)
+    cadastrar_produto("Feijão 1 kg",      "Alimentos",     8.50, 30)
+    cadastrar_produto("Óleo de Soja 1 L", "Alimentos",     9.00,  4)
+    cadastrar_produto("Detergente 500 ml","Limpeza",        3.75, 80)
+    cadastrar_produto("Água Sanitária",   "Limpeza",        4.20,  2)
+ 
+ 
+# =============================================================================
+#  LOOP PRINCIPAL DO PROGRAMA
+# =============================================================================
+ 
+def main():
+    cabecalho()
+    print("\n  Carregando dados de exemplo...")
+    carregar_dados_exemplo()
+    print("  Pronto!\n")
+ 
+    while True:
+        opcao = menu_principal()
+ 
+        # ── 1. Cadastrar produto ───────────────────────────────────────────
+        if opcao == "1":
+            print("\n  --- CADASTRO DE PRODUTO ---")
+            nome       = input("  Nome do produto  : ")
+            categoria  = input("  Categoria        : ")
+            preco      = ler_float("  Preço unitário  : R$ ", minimo=0)
+            quantidade = ler_inteiro("  Quantidade inicial: ", minimo=0)
+            cadastrar_produto(nome, categoria, preco, quantidade)
+ 
+        # ── 2. Registrar entrada ───────────────────────────────────────────
+        elif opcao == "2":
+            print("\n  --- ENTRADA DE ESTOQUE ---")
+            listar_todos()
+            pid = ler_inteiro("  ID do produto   : ", minimo=1)
+            qtd = ler_inteiro("  Quantidade (+)  : ", minimo=1)
+            registrar_entrada(pid, qtd)
+ 
+        # ── 3. Registrar saída ────────────────────────────────────────────
+        elif opcao == "3":
+            print("\n  --- SAÍDA DE ESTOQUE ---")
+            listar_todos()
+            pid = ler_inteiro("  ID do produto   : ", minimo=1)
+            qtd = ler_inteiro("  Quantidade (-)  : ", minimo=1)
+            registrar_saida(pid, qtd)
+ 
+        # ── 4. Consultar produto ──────────────────────────────────────────
+        elif opcao == "4":
+            print("\n  --- CONSULTA DE PRODUTO ---")
+            pid = ler_inteiro("  ID do produto   : ", minimo=1)
+            consultar_estoque(pid)
+ 
+        # ── 5. Listar todos ───────────────────────────────────────────────
+        elif opcao == "5":
+            print("\n  --- LISTA COMPLETA DE PRODUTOS ---")
+            listar_todos()
+ 
+        # ── 6. Alerta de estoque baixo ────────────────────────────────────
+        elif opcao == "6":
+            print("\n  --- ALERTA DE ESTOQUE BAIXO ---")
+            limite = ler_inteiro("  Quantidade mínima aceitável: ", minimo=0)
+            alertar_estoque_baixo(limite)
+ 
+        # ── 0. Sair ───────────────────────────────────────────────────────
+        elif opcao == "0":
+            print("\n  Encerrando o sistema. Até logo!\n")
+            break
+ 
+        # ── Opção inválida ────────────────────────────────────────────────
+        else:
+            print("\n  [ERRO] Opção inválida. Digite um número entre 0 e 6.")
+ 
+        input("\n  Pressione ENTER para continuar...")
+ 
+ 
+# Ponto de entrada
+if __name__ == "__main__":
+    main()
