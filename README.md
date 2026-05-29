@@ -1,107 +1,133 @@
-# Trabalho-Gest-o-Estoque-05-26
-Trabalho de faculdade em python e SQLite sobre gestão de estoques.
-# Sistema de Gestao de Estoque
+# Sistema de Gestão de Estoque
 
-Este repositorio contem o projeto academico desenvolvido para a disciplina de Programacao de Computadores. O sistema consiste em uma aplicacao baseada em terminal voltada ao monitoramento, controle de fluxos de mercadorias, gerenciamento de saldos e emissao de alertas de niveis criticos para ambientes comerciais e industriais.
+Sistema de controle de estoque desenvolvido em **Python**, com persistência em banco de dados **SQLite**, histórico de movimentações, relatórios financeiros e exportação para CSV.
 
+Projeto acadêmico evoluído de uma versão em programação estruturada (dicionário em memória) para uma versão profissional com banco de dados relacional e funcionalidades diferenciais.
 
+---
 
+## Funcionalidades
 
-## Objetivo do Projeto
+### Funcionalidades principais
+- Cadastro de produtos (nome, quantidade inicial, preço unitário, estoque mínimo)
+- Registro de entradas no estoque
+- Registro de saídas com validação de saldo
+- Consulta do estoque atual em formato de tabela
+- Alerta de estoque baixo (produtos abaixo do mínimo definido)
 
-Aplicar conceitos praticos de programacao estruturada em linguagem Python, com enfase em manipulacao de estruturas de dados compostas (dicionarios), modularizacao por meio de funcao com escopo delimitado, validacoes de consistencia e tratamento de entradas de dados para simular um cenario corporativo real de controle de inventario.
+### Diferenciais implementados (versão 2.0)
+- **Persistência em SQLite** — os dados não se perdem ao fechar o programa
+- **Histórico de movimentações** — toda entrada/saída é registrada com data/hora
+- **Relatório financeiro** — valor total imobilizado no estoque
+- **Exportação para CSV** — compatível com Excel (separador `;`, encoding `utf-8-sig`)
+- **Queries parametrizadas** — proteção contra SQL Injection
+- **Constraints no banco** — `CHECK` para quantidades/preços não negativos e `FOREIGN KEY` para integridade referencial
 
+---
 
+## Estrutura do banco de dados
 
-## Funcionalidades Implementadas
+O arquivo `estoque.db` é criado automaticamente na primeira execução, com duas tabelas:
 
-O programa possui um menu dinamico e interativo via console equipado com as seguintes rotinas de negocio:
+### `produtos`
+| Campo           | Tipo    | Descrição                          |
+|-----------------|---------|------------------------------------|
+| id              | INTEGER | Chave primária (AUTOINCREMENT)     |
+| nome            | TEXT    | Nome do produto (único)            |
+| quantidade      | INTEGER | Quantidade atual em estoque (>= 0) |
+| preco           | REAL    | Preço unitário (>= 0)              |
+| estoque_minimo  | INTEGER | Quantidade mínima de alerta (>= 0) |
 
-* **Cadastro de produtos (Opcao 1):** Registra itens capturando nome, categoria, preco unitario e saldo inicial. Gera IDs numericos e sequenciais automaticamente.
-* **Registrar entrada (Opcao 2):** Adiciona quantidades positivas ao saldo de um produto especifico com base no ID fornecido.
-* **Registrar saida (Opcao 3):** Deduz itens do estoque de forma segura, acionando barreiras de validacao para impedir que o saldo fique negativo.
-* **Consultar produto (Opcao 4):** Retorna uma ficha descritiva formatada com todos os metadados do produto consultado.
-* **Listar todos os produtos (Opcao 5):** Exibe o inventario consolidado em uma tabela organizada por colunas com o total geral de itens.
-* **Alerta de estoque baixo (Opcao 6):** Identifica em tempo real quais produtos possuem quantidade em estoque estritamente abaixo do teto configurado pelo operador.
+### `movimentacoes`
+| Campo       | Tipo    | Descrição                                  |
+|-------------|---------|--------------------------------------------|
+| id          | INTEGER | Chave primária (AUTOINCREMENT)             |
+| produto_id  | INTEGER | FK -> `produtos.id`                        |
+| tipo        | TEXT    | `'ENTRADA'` ou `'SAIDA'`                   |
+| quantidade  | INTEGER | Quantidade movimentada                     |
+| data_hora   | TEXT    | Data/hora da movimentação (ISO 8601)       |
 
-### Tratamento de Erros e Robustez
-O sistema foi projetado para evitar interrupcoes abruptas do script (crashes), implementando:
-* Tratamento de excecoes (`ValueError`) via funcoes auxiliares de leitura para impedir a quebra do programa caso o usuario digite caracteres alfabeticos em campos numericos.
-* Validacao de valores negativos para precos, limites e quantidades.
-* Mensagens informativas estruturadas caso o usuario pesquise por IDs inexistentes ou tente realizar operacoes superiores ao volume disponivel (Estoque insuficiente).
+---
 
+## Tecnologias utilizadas
 
+- **Python 3.8+**
+- **sqlite3** (biblioteca nativa — sem dependências externas)
+- **csv** (biblioteca nativa)
+- **datetime** (biblioteca nativa)
 
-## Estrutura de Dados e Funcoes Obrigatorias
+> Nenhuma dependência externa é necessária. Basta ter Python instalado.
 
-O projeto centraliza seus registros em um dicionario global chamado `estoque`, onde cada chave unica representa o ID do produto e o valor armazena um sub-dicionario com os atributos da mercadoria.
+---
 
-### Funcoes Obrigatorias do Escopo:
-* `def cadastrar_produto(nome, categoria, preco, quantidade):` Registra um novo produto apos sanitizacao das strings e validacao numerica.
-* `def registrar_entrada(produto_id, quantidade):` Localiza a chave correspondente no dicionario global e atualiza o montante.
-* `def registrar_saida(produto_id, quantidade):` Verifica a elegibilidade da baixa e atualiza o saldo fisico.
-* `def consultar_estoque(produto_id):` Imprime e retorna o dicionario especifico do produto.
-* `def alertar_estoque_baixo(limite):` Filtra elementos estruturados via list comprehension, gerando um relatorio analitico de urgencia.
+## Como executar
 
+```bash
+# Clone o repositório
+git clone https://github.com/seu-usuario/sistema-estoque.git
+cd sistema-estoque
 
+# Execute o sistema
+python sistema_estoque.py
+```
 
-## Instrucoes de Execucao
+Na primeira execução, o banco `estoque.db` é criado automaticamente e alguns produtos de exemplo são carregados.
 
-### Pre-requisitos
-* Ambiente de execucao **Python 3.x** instalado e configurado.
+---
 
-### Passo a Passo para Execucao
+## Menu do sistema
 
-1. Clonar o repositorio para o ambiente local:
-   ```bash
-   git clone [https://github.com/]# Sistema de Gestao de Estoque
+```
+=================================================================
+              SISTEMA DE GESTÃO DE ESTOQUE
+=================================================================
+  1. Cadastrar produto
+  2. Registrar entrada
+  3. Registrar saída
+  4. Consultar estoque
+  5. Alertar estoque baixo
+  6. Relatório financeiro
+  7. Exportar CSV
+  8. Histórico de movimentações
+  0. Sair
+=================================================================
+```
 
-Este repositorio contem o projeto academico desenvolvido para a disciplina de Programacao Estruturada. O sistema consiste em uma aplicacao baseada em terminal voltada ao monitoramento, controle de fluxos de mercadorias, gerenciamento de saldos e emissao de alertas de niveis criticos para ambientes comerciais e industriais.
+---
 
-**Valor do Projeto:** 2,0 pontos  
-**Estudante:** [Seu Nome Completo]  
-**Link do Repositorio:** [Link do seu GitHub]
+## Arquivos gerados
 
+| Arquivo                  | Descrição                                          |
+|--------------------------|----------------------------------------------------|
+| `estoque.db`             | Banco de dados SQLite (criado automaticamente)     |
+| `relatorio_estoque.csv`  | Relatório exportável para Excel/Google Sheets      |
 
+---
 
-## Objetivo do Projeto
+## O que mudou da versão 1.0 para a 2.0
 
-Aplicar conceitos praticos de programacao estruturada em linguagem Python, com enfase em manipulacao de estruturas de dados compostas (dicionarios), modularizacao por meio de funcao com escopo delimitado, validacoes de consistencia e tratamento de entradas de dados para simular um cenario corporativo real de controle de inventario.
+| Aspecto              | Versão 1.0 (estruturada)        | Versão 2.0 (com SQLite)              |
+|----------------------|----------------------------------|--------------------------------------|
+| Persistência         | Dicionário em memória (`{}`)     | Banco SQLite (`estoque.db`)          |
+| Dados após fechar    | Perdidos                         | Mantidos                             |
+| Histórico            | Não existe                       | Tabela `movimentacoes`               |
+| Relatório financeiro | Não existe                       | Implementado                         |
+| Exportação           | Não existe                       | CSV compatível com Excel             |
+| Segurança            | —                                | Queries parametrizadas (`?`)         |
+| Integridade          | —                                | `CHECK` + `FOREIGN KEY`              |
 
+---
 
+## Projeto acadêmico
 
-## Funcionalidades Implementadas
+Desenvolvido como trabalho da disciplina de **Programação**, com foco em demonstrar:
+- Boas práticas de organização de código em Python
+- Uso de banco de dados relacional embarcado
+- Tratamento de entradas inválidas e exceções
+- Funcionalidades extras que agregam valor real ao sistema
 
-O programa possui um menu dinamico e interativo via console equipado com as seguintes rotinas de negocio:
+---
 
-* **Cadastro de produtos (Opcao 1):** Registra itens capturando nome, categoria, preco unitario e saldo inicial. Gera IDs numericos e sequenciais automaticamente.
-* **Registrar entrada (Opcao 2):** Adiciona quantidades positivas ao saldo de um produto especifico com base no ID fornecido.
-* **Registrar saida (Opcao 3):** Deduz itens do estoque de forma segura, acionando barreiras de validacao para impedir que o saldo fique negativo.
-* **Consultar produto (Opcao 4):** Retorna uma ficha descritiva formatada com todos os metadados do produto consultado.
-* **Listar todos os produtos (Opcao 5):** Exibe o inventario consolidado em uma tabela organizada por colunas com o total geral de itens.
-* **Alerta de estoque baixo (Opcao 6):** Identifica em tempo real quais produtos possuem quantidade em estoque estritamente abaixo do teto configurado pelo operador.
+## Licença
 
-### Tratamento de Erros e Robustez
-O sistema foi projetado para evitar interrupcoes abruptas do script (crashes), implementando:
-* Tratamento de excecoes (`ValueError`) via funcoes auxiliares de leitura para impedir a quebra do programa caso o usuario digite caracteres alfabeticos em campos numericos.
-* Validacao de valores negativos para precos, limites e quantidades.
-* Mensagens informativas estruturadas caso o usuario pesquise por IDs inexistentes ou tente realizar operacoes superiores ao volume disponivel (Estoque insuficiente).
-
-
-
-## Estrutura de Dados e Funcoes Obrigatorias
-
-O projeto centraliza seus registros em um dicionario global chamado `estoque`, onde cada chave unica representa o ID do produto e o valor armazena um sub-dicionario com os atributos da mercadoria.
-
-### Funcoes Obrigatorias do Escopo:
-* `def cadastrar_produto(nome, categoria, preco, quantidade):` Registra um novo produto apos sanitizacao das strings e validacao numerica.
-* `def registrar_entrada(produto_id, quantidade):` Localiza a chave correspondente no dicionario global e atualiza o montante.
-* `def registrar_saida(produto_id, quantidade):` Verifica a elegibilidade da baixa e atualiza o saldo fisico.
-* `def consultar_estoque(produto_id):` Imprime e retorna o dicionario especifico do produto.
-* `def alertar_estoque_baixo(limite):` Filtra elementos estruturados via list comprehension, gerando um relatorio analitico de urgencia.
-
-
-
-### Pre-requisitos
-* Ambiente de execucao **Python 3.x** instalado e configurado.
-
+Projeto livre para fins acadêmicos e educacionais.
