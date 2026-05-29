@@ -1,0 +1,470 @@
+
+
+import sqlite3
+import csv
+from datetime import datetime
+
+# Nome do arquivo do banco SQLite (criado automaticamente)
+DB_NAME = "estoque.db"
+
+
+# =============================================================================
+#  INICIALIZAÇÃO DO BANCO DE DADOS
+# =============================================================================
+
+def conectar():
+    """Abre uma conexão com o banco SQLite.
+    row_factory = Row permite acessar colunas por nome (ex.: row['nome'])."""
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def inicializar_banco():
+    """Cria as tabelas 'produtos' e 'movimentacoes' se ainda não existirem."""
+    conn = conectar()
+    cur = conn.cursor()
+
+    # Tabela principal de produtos
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS produtos (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            nome       TEXT    NOT NULL,
+            categoria  TEXT    NOT NULL,
+            preco      REAL    NOT NULL CHECK (preco >= 0),
+            quantidade INTEGER NOT NULL CHECK (quantidade >= 0)
+        )
+    """)
+
+    # Tabela de histórico de movimentações (diferencial)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS movimentacoes (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            produto_id  INTEGER NOT NULL,
+            tipo        TEXT    NOT NULL,        -- 'ENTRADA' ou 'SAIDA'
+            quantidade  INTEGER NOT NULL,
+            data_hora   TEXT    NOT NULL,
+            FOREIGN KEY (produto_id) REFERENCES produtos(id)
+        )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+def registrar_movimentacao(produto_id, tipo, quantidade):
+    """Insere uma linha no histórico de movimentações."""
+    conn = conectar()
+    conn.execute(
+        "INSERT INTO movimentacoes (produto_id, tipo, quantidade, data_hora) "
+        "VALUES (?, ?, ?, ?)",
+        (produto_id, tipo, quantidade,
+         datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    )
+    conn.commit()
+    conn.close()
+
+
+# =============================================================================
+#  FUNÇÕES OBRIGATÓRIAS  (mesma assinatura, agora usando SQLite)
+# =============================================================================
+
+def cadastrar_produto(nome, categoria, preco, quantidade):
+    """Insere um novo produto na tabela 'produtos'."""
+    # Validações
+    if not nome.strip():
+        print("  [ERRO] O nome do produto não pode ser vazio.")
+        return None
+    if not categoria.strip():
+        print("  [ERRO] A categoria não pode ser vazia.")
+        return None
+    if preco < 0:
+        print("  [ERRO] O preço não pode ser negativo.")
+        return None
+    if quantidade < 0:
+        print("  [ERRO] A quantidade inicial não pode ser negativa.")
+        return None
+
+    conn = conectar()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO produtos (nome, categoria, preco, quantidade) "
+        "VALUES (?, ?, ?, ?)",
+        (nome.strip(), categoria.strip(), round(preco, 2), int(quantidade))
+    )
+    produto_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+
+    # Se já cadastrou com saldo inicial, registra como entrada no histórico
+    if quantidade > 0:
+        registrar_movimentacao(produto_id, "ENTRADA", int(quantidade))
+
+    print(f"\n  [OK] Produto '{nome}' cadastrado com sucesso! (ID: {produto_id})")
+    return produto_id
+
+
+def registrar_entrada(produto_id, quantidade):
+    """Soma 'quantidade' ao saldo do produto e grava no histórico."""
+    if quantidade <= 0:
+        print("  [ERRO] A quantidade de entrada deve ser maior que zero.")
+        return
+
+    conn = conectar()
+    produto = conn.execute(
+        "SELECT * FROM produtos WHERE id = ?", (produto_id,)
+    ).fetchone()
+
+    if produto is None:
+        print(f"  [ERRO] Produto ID {produto_id} não encontrado no sistema.")
+        conn.close()
+        return
+
+    novo_saldo = produto["quantidade"] + quantidade
+    conn.execute(
+        "UPDATE produtos SET quantidade = ? WHERE id = ?",
+        (novo_saldo, produto_id)
+    )
+    conn.commit()
+    conn.close()
+
+    registrar_movimentacao(produto_id, "ENTRADA", quantidade)
+
+    print(f"\n  [OK] Entrada registrada: +{quantidade} unidade(s) de '{produto['nome']}'.")
+    print(f"       Saldo atual: {novo_saldo} unidade(s).")
+
+
+def registrar_saida(produto_id, quantidade):
+    """Subtrai 'quantidade' do saldo. Bloqueia se não houver estoque suficiente."""
+    if quantidade <= 0:
+        print("  [ERRO] A quantidade de saída deve ser maior que zero.")
+        return
+
+    conn = conectar()
+    produto = conn.execute(
+        "SELECT * FROM produtos WHERE id = ?", (produto_id,)
+    ).fetchone()
+
+    if produto is None:
+        print(f"  [ERRO] Produto ID {produto_id} não encontrado no sistema.")
+        conn.close()
+        return
+
+    saldo_atual = produto["quantidade"]
+    if quantidade > saldo_atual:
+        print(f"  [ERRO] Estoque insuficiente. Disponível: {saldo_atual} unidade(s).")
+        conn.close()
+        return
+
+    novo_saldo = saldo_atual - quantidade
+    conn.execute(
+        "UPDATE produtos SET quantidade = ? WHERE id = ?",
+        (novo_saldo, produto_id)
+    )
+    conn.commit()
+    conn.close()
+
+    registrar_movimentacao(produto_id, "SAIDA", quantidade)
+
+    print(f"\n  [OK] Saída registrada: -{quantidade} unidade(s) de '{produto['nome']}'.")
+    print(f"       Saldo atual: {novo_saldo} unidade(s).")
+
+
+def consultar_estoque(produto_id):
+    """Mostra os dados completos de um produto."""
+    conn = conectar()
+    p = conn.execute(
+        "SELECT * FROM produtos WHERE id = ?", (produto_id,)
+    ).fetchone()
+    conn.close()
+
+    if p is None:
+        print(f"  [ERRO] Produto ID {produto_id} não encontrado no sistema.")
+        return None
+
+    print("\n  " + "─" * 40)
+    print(f"  Produto ID : {p['id']}")
+    print(f"  Nome       : {p['nome']}")
+    print(f"  Categoria  : {p['categoria']}")
+    print(f"  Preço      : R$ {p['preco']:.2f}")
+    print(f"  Quantidade : {p['quantidade']} unidade(s)")
+    print("  " + "─" * 40)
+
+    return dict(p)
+
+
+def alertar_estoque_baixo(limite):
+    """Lista produtos cujo saldo está abaixo de 'limite'."""
+    if limite < 0:
+        print("  [ERRO] O limite não pode ser negativo.")
+        return
+
+    conn = conectar()
+    criticos = conn.execute(
+        "SELECT * FROM produtos WHERE quantidade < ? ORDER BY quantidade ASC",
+        (limite,)
+    ).fetchall()
+    conn.close()
+
+    if not criticos:
+        print(f"\n  [OK] Nenhum produto abaixo do limite de {limite} unidade(s).")
+        return
+
+    print(f"\n  ⚠  ALERTA – Produtos com estoque abaixo de {limite} unidade(s):")
+    print("  " + "─" * 50)
+    print(f"  {'ID':<6} {'Nome':<22} {'Categoria':<16} {'Qtd':>5}")
+    print("  " + "─" * 50)
+    for p in criticos:
+        print(f"  {p['id']:<6} {p['nome']:<22} {p['categoria']:<16} {p['quantidade']:>5}")
+    print("  " + "─" * 50)
+    print(f"  Total de produtos críticos: {len(criticos)}")
+
+
+# =============================================================================
+#  FUNCIONALIDADES DIFERENCIAIS (BÔNUS)
+# =============================================================================
+
+def relatorio_financeiro():
+    """Calcula o valor total investido no estoque (Σ preço * quantidade)."""
+    conn = conectar()
+    linhas = conn.execute(
+        "SELECT nome, preco, quantidade, (preco * quantidade) AS subtotal "
+        "FROM produtos ORDER BY subtotal DESC"
+    ).fetchall()
+    total = conn.execute(
+        "SELECT COALESCE(SUM(preco * quantidade), 0) AS total FROM produtos"
+    ).fetchone()["total"]
+    conn.close()
+
+    if not linhas:
+        print("\n  [INFO] Nenhum produto cadastrado para gerar relatório.")
+        return
+
+    print("\n  " + "─" * 60)
+    print(f"  {'Produto':<24} {'Preço':>10} {'Qtd':>6} {'Subtotal':>14}")
+    print("  " + "─" * 60)
+    for l in linhas:
+        print(f"  {l['nome']:<24} R$ {l['preco']:>7.2f} "
+              f"{l['quantidade']:>6} R$ {l['subtotal']:>11.2f}")
+    print("  " + "─" * 60)
+    print(f"  VALOR TOTAL INVESTIDO NO ESTOQUE: R$ {total:.2f}")
+    print("  " + "─" * 60)
+
+
+def exportar_csv(arquivo="relatorio_estoque.csv"):
+    """Gera um CSV com o saldo atual de todos os produtos."""
+    conn = conectar()
+    produtos = conn.execute(
+        "SELECT id, nome, categoria, preco, quantidade, "
+        "(preco * quantidade) AS valor_total FROM produtos ORDER BY id"
+    ).fetchall()
+    conn.close()
+
+    if not produtos:
+        print("\n  [INFO] Nenhum produto para exportar.")
+        return
+
+    with open(arquivo, mode="w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f, delimiter=";")
+        writer.writerow(["ID", "Nome", "Categoria", "Preço (R$)",
+                         "Quantidade", "Valor Total (R$)"])
+        for p in produtos:
+            writer.writerow([p["id"], p["nome"], p["categoria"],
+                             f"{p['preco']:.2f}", p["quantidade"],
+                             f"{p['valor_total']:.2f}"])
+
+    print(f"\n  [OK] Relatório exportado para '{arquivo}' ({len(produtos)} produto(s)).")
+
+
+def ver_historico():
+    """Exibe o histórico de movimentações (diferencial)."""
+    conn = conectar()
+    movs = conn.execute("""
+        SELECT m.id, m.data_hora, m.tipo, m.quantidade,
+               p.nome AS produto
+        FROM movimentacoes m
+        LEFT JOIN produtos p ON p.id = m.produto_id
+        ORDER BY m.id DESC
+        LIMIT 30
+    """).fetchall()
+    conn.close()
+
+    if not movs:
+        print("\n  [INFO] Nenhuma movimentação registrada ainda.")
+        return
+
+    print("\n  Últimas movimentações (mais recentes primeiro):")
+    print("  " + "─" * 65)
+    print(f"  {'Data/Hora':<20} {'Tipo':<8} {'Qtd':>5}  {'Produto'}")
+    print("  " + "─" * 65)
+    for m in movs:
+        produto = m["produto"] or "(removido)"
+        print(f"  {m['data_hora']:<20} {m['tipo']:<8} {m['quantidade']:>5}  {produto}")
+    print("  " + "─" * 65)
+
+
+# =============================================================================
+#  FUNÇÕES AUXILIARES DE INTERFACE
+# =============================================================================
+
+def listar_todos():
+    """Lista todos os produtos cadastrados."""
+    conn = conectar()
+    produtos = conn.execute("SELECT * FROM produtos ORDER BY id").fetchall()
+    conn.close()
+
+    if not produtos:
+        print("\n  [INFO] Nenhum produto cadastrado ainda.")
+        return
+
+    print("\n  " + "─" * 65)
+    print(f"  {'ID':<6} {'Nome':<22} {'Categoria':<16} {'Preço':>10} {'Qtd':>6}")
+    print("  " + "─" * 65)
+    for p in produtos:
+        print(f"  {p['id']:<6} {p['nome']:<22} {p['categoria']:<16} "
+              f"R$ {p['preco']:>7.2f} {p['quantidade']:>6}")
+    print("  " + "─" * 65)
+    print(f"  Total de produtos: {len(produtos)}")
+
+
+def ler_inteiro(mensagem, minimo=None):
+    """Lê um inteiro do usuário com tratamento de erro."""
+    while True:
+        try:
+            valor = int(input(mensagem))
+            if minimo is not None and valor < minimo:
+                print(f"  [ERRO] Digite um valor maior ou igual a {minimo}.")
+                continue
+            return valor
+        except ValueError:
+            print("  [ERRO] Entrada inválida. Digite um número inteiro.")
+
+
+def ler_float(mensagem, minimo=None):
+    """Lê um número decimal do usuário com tratamento de erro."""
+    while True:
+        try:
+            valor = float(input(mensagem))
+            if minimo is not None and valor < minimo:
+                print(f"  [ERRO] Digite um valor maior ou igual a {minimo}.")
+                continue
+            return valor
+        except ValueError:
+            print("  [ERRO] Entrada inválida. Digite um número válido.")
+
+
+def cabecalho():
+    print("\n" + "=" * 55)
+    print("        SISTEMA DE GESTÃO DE ESTOQUE")
+    print("=" * 55)
+
+
+def menu_principal():
+    print("\n  ┌─────────────────────────────────┐")
+    print("  │         MENU PRINCIPAL          │")
+    print("  ├─────────────────────────────────┤")
+    print("  │  1 – Cadastrar produto          │")
+    print("  │  2 – Registrar entrada          │")
+    print("  │  3 – Registrar saída            │")
+    print("  │  4 – Consultar produto          │")
+    print("  │  5 – Listar todos os produtos   │")
+    print("  │  6 – Alerta de estoque baixo    │")
+    print("  │  7 – Relatório financeiro       │")
+    print("  │  8 – Exportar estoque (CSV)     │")
+    print("  │  9 – Histórico de movimentações │")
+    print("  │  0 – Sair                       │")
+    print("  └─────────────────────────────────┘")
+    return input("  Escolha uma opção: ").strip()
+
+
+# =============================================================================
+#  DADOS DE EXEMPLO (apenas se o banco ainda estiver vazio)
+# =============================================================================
+
+def carregar_dados_exemplo_se_vazio():
+    conn = conectar()
+    total = conn.execute("SELECT COUNT(*) AS c FROM produtos").fetchone()["c"]
+    conn.close()
+
+    if total == 0:
+        print("\n  Banco vazio — carregando dados de exemplo...")
+        cadastrar_produto("Arroz 5 kg",        "Alimentos", 12.90, 50)
+        cadastrar_produto("Feijão 1 kg",       "Alimentos",  8.50, 30)
+        cadastrar_produto("Óleo de Soja 1 L",  "Alimentos",  9.00,  4)
+        cadastrar_produto("Detergente 500 ml", "Limpeza",    3.75, 80)
+        cadastrar_produto("Água Sanitária",    "Limpeza",    4.20,  2)
+
+
+# =============================================================================
+#  LOOP PRINCIPAL
+# =============================================================================
+
+def main():
+    cabecalho()
+    inicializar_banco()              # cria tabelas se necessário
+    carregar_dados_exemplo_se_vazio()
+    print("  Pronto!\n")
+
+    while True:
+        opcao = menu_principal()
+
+        if opcao == "1":
+            print("\n  --- CADASTRO DE PRODUTO ---")
+            nome       = input("  Nome do produto    : ")
+            categoria  = input("  Categoria          : ")
+            preco      = ler_float("  Preço unitário   : R$ ", minimo=0)
+            quantidade = ler_inteiro("  Quantidade inicial: ", minimo=0)
+            cadastrar_produto(nome, categoria, preco, quantidade)
+
+        elif opcao == "2":
+            print("\n  --- ENTRADA DE ESTOQUE ---")
+            listar_todos()
+            pid = ler_inteiro("  ID do produto   : ", minimo=1)
+            qtd = ler_inteiro("  Quantidade (+)  : ", minimo=1)
+            registrar_entrada(pid, qtd)
+
+        elif opcao == "3":
+            print("\n  --- SAÍDA DE ESTOQUE ---")
+            listar_todos()
+            pid = ler_inteiro("  ID do produto   : ", minimo=1)
+            qtd = ler_inteiro("  Quantidade (-)  : ", minimo=1)
+            registrar_saida(pid, qtd)
+
+        elif opcao == "4":
+            print("\n  --- CONSULTA DE PRODUTO ---")
+            pid = ler_inteiro("  ID do produto   : ", minimo=1)
+            consultar_estoque(pid)
+
+        elif opcao == "5":
+            print("\n  --- LISTA COMPLETA DE PRODUTOS ---")
+            listar_todos()
+
+        elif opcao == "6":
+            print("\n  --- ALERTA DE ESTOQUE BAIXO ---")
+            limite = ler_inteiro("  Quantidade mínima aceitável: ", minimo=0)
+            alertar_estoque_baixo(limite)
+
+        elif opcao == "7":
+            print("\n  --- RELATÓRIO FINANCEIRO ---")
+            relatorio_financeiro()
+
+        elif opcao == "8":
+            print("\n  --- EXPORTAÇÃO PARA CSV ---")
+            exportar_csv()
+
+        elif opcao == "9":
+            print("\n  --- HISTÓRICO DE MOVIMENTAÇÕES ---")
+            ver_historico()
+
+        elif opcao == "0":
+            print("\n  Encerrando o sistema. Até logo!\n")
+            break
+
+        else:
+            print("\n  [ERRO] Opção inválida. Digite um número entre 0 e 9.")
+
+        input("\n  Pressione ENTER para continuar...")
+
+
+if __name__ == "__main__":
+    main()
