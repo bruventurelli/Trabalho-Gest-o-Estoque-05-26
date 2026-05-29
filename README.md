@@ -64,7 +64,7 @@ O arquivo `estoque.db` é criado automaticamente na primeira execução, com dua
 
 ```bash
 # Clone o repositório
-git clone https://github.com/seu-usuario/sistema-estoque.git
+git clone (https://github.com/bruventurelli/Trabalho-Gest-o-Estoque-05-26.git)
 cd sistema-estoque
 
 # Execute o sistema
