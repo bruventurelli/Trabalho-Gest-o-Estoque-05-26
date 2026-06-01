@@ -1,0 +1,200 @@
+# 📦 Sistema de Gestão de Estoque — v2.0
+
+> Atualização completa com correções de segurança, novas funcionalidades e melhorias de desempenho.
+
+---
+
+## 🚀 Como executar
+
+```bash
+python gestao_estoque_v2.py
+```
+
+Não é necessário instalar nenhuma biblioteca externa. O banco de dados `estoque.db` é criado automaticamente na primeira execução.
+
+---
+
+## 📋 O que havia na v1 (e funcionava bem)
+
+| Funcionalidade | Status |
+|---|---|
+| Cadastro de produtos | ✅ Mantido e corrigido |
+| Registro de entrada/saída | ✅ Mantido e corrigido |
+| Consulta de produto por ID | ✅ Mantido |
+| Alerta de estoque baixo | ✅ Mantido |
+| Histórico de movimentações | ✅ Expandido |
+| Relatório financeiro | ✅ Mantido |
+| Exportação para CSV | ✅ Corrigida compatibilidade com Excel |
+
+---
+
+##  Alterações Técnicas (o que foi corrigido)
+
+### 1. Context manager em todas as conexões
+**Problema na v1:** conexões abertas manualmente com `conn = conectar()` podiam ficar abertas se ocorresse uma exceção antes do `conn.close()`, causando travamento do banco em produção.
+
+**Correção v2:** criado um context manager `get_conn()` com `@contextmanager`. Agora todas as conexões usam `with get_conn() as conn:`, garantindo fechamento automático em qualquer situação, inclusive em caso de erro.
+
+```python
+# v1 — perigoso
+conn = conectar()
+conn.execute(...)
+conn.close()   # se der erro antes disso, conexão fica aberta
+
+# v2 — seguro
+with get_conn() as conn:
+    conn.execute(...)   # fecha sozinho, sempre
+```
+
+---
+
+### 2. Transações atômicas
+**Problema na v1:** `registrar_entrada()` e `registrar_saida()` abriam uma conexão para atualizar o produto e chamavam `registrar_movimentacao()` que abria **outra conexão separada**. Se o programa travasse entre os dois, o estoque seria atualizado mas o histórico não, deixando os dados inconsistentes.
+
+**Correção v2:** o `UPDATE produtos` e o `INSERT movimentacoes` agora ocorrem **na mesma conexão e no mesmo `commit()`**. Ou os dois salvam juntos, ou nenhum salva.
+
+---
+
+### 3. Índices no banco de dados
+**Problema na v1:** sem índices, buscas por nome e categoria percorriam a tabela inteira (full table scan). Com centenas de produtos isso fica lento.
+
+**Correção v2:** três índices criados automaticamente na inicialização:
+- `idx_produtos_nome` — acelera busca por nome (LIKE)
+- `idx_produtos_categoria` — acelera filtro por categoria
+- `idx_mov_produto` — acelera consulta do histórico por produto
+
+---
+
+### 4. Restrição UNIQUE (nome + categoria)
+**Problema na v1:** era possível cadastrar "Arroz 5 kg / Alimentos" duas vezes sem nenhum aviso, duplicando o produto no sistema.
+
+**Correção v2:** constraint `UNIQUE (nome, categoria)` adicionada na tabela. Tentativas de duplicata retornam uma mensagem clara de erro.
+
+---
+
+### 5. Logging estruturado de erros
+**Problema na v1:** erros inesperados simplesmente travavam o programa sem deixar rastro.
+
+**Correção v2:** erros são capturados com `try/except` e gravados automaticamente em `estoque.log` com timestamp, nível e stack trace completo. O usuário vê uma mensagem amigável; o desenvolvedor vê o detalhe no log.
+
+---
+
+### 6. Compatibilidade do CSV com Excel (BR)
+**Problema na v1:** o CSV usava ponto como separador decimal (`12.90`). O Excel brasileiro espera vírgula (`12,90`) — ao abrir o arquivo, os valores financeiros ficavam errados.
+
+**Correção v2:**
+- Decimais trocados de ponto para vírgula: `12.90` → `12,90`
+- Encoding alterado de `utf-8` para `utf-8-sig` (com BOM), que o Excel BR reconhece automaticamente sem precisar do assistente de importação.
+
+---
+
+##  Novas Funcionalidades
+
+### 7. Busca por nome — `buscar_produto(termo)`
+Permite encontrar um produto digitando parte do nome, sem precisar saber o ID.
+
+```
+Termo de busca: arroz
+→ Exibe todos os produtos cujo nome contém "arroz" (sem diferenciar maiúsculas)
+```
+
+---
+
+### 8. Filtro por categoria — `filtrar_por_categoria(categoria)`
+Lista todos os produtos de uma categoria com valor total por item e subtotal da categoria.
+
+```
+Categoria: Limpeza
+→ Lista Detergente 500 ml e Água Sanitária com valor total em estoque
+```
+
+---
+
+### 9. Edição de produto — `editar_produto(produto_id)`
+Permite corrigir nome, categoria e preço de um produto existente sem precisar removê-lo e recadastrá-lo. Campos deixados em branco mantêm o valor atual.
+
+---
+
+### 10. Remoção com confirmação — `remover_produto(produto_id)`
+Remove um produto do sistema. Para evitar exclusões acidentais, o usuário precisa **digitar o nome exato do produto** para confirmar. Basta pressionar Enter para cancelar.
+
+O histórico de movimentações do produto removido é preservado (o produto aparece como "produto removido" no histórico).
+
+---
+
+### 11. Histórico com filtro e limite configurável — `ver_historico(produto_id, limite)`
+Agora é possível:
+- Ver o histórico de um produto específico (filtrando por ID)
+- Configurar quantas linhas exibir (padrão: 30, configurável na execução)
+
+---
+
+### 12. Listagem com paginação — `listar_todos(pagina)`
+Com muitos produtos, a listagem completa travava o terminal. Agora exibe `PAGE_SIZE` itens por vez (padrão: 20) com navegação por teclado:
+- `P` — próxima página
+- `A` — página anterior
+- `I` — ir direto para uma página
+
+---
+
+### 13. Valor em estoque na consulta
+A função `consultar_estoque()` agora exibe também o **valor total em estoque** do produto (`preço × quantidade`), útil para o dono avaliar quanto está imobilizado naquele item.
+
+---
+
+##  Arquivos gerados pelo sistema
+
+| Arquivo | Descrição |
+|---|---|
+| `estoque.db` | Banco de dados SQLite com produtos e histórico |
+| `estoque.log` | Log de erros com timestamp (gerado só se houver erros) |
+| `relatorio_estoque.csv` | Exportação do estoque (gerado pela opção 12) |
+
+---
+
+##  Estrutura do banco de dados
+
+```sql
+-- Tabela de produtos
+produtos (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    nome       TEXT    NOT NULL,
+    categoria  TEXT    NOT NULL,
+    preco      REAL    NOT NULL CHECK (preco >= 0),
+    quantidade INTEGER NOT NULL DEFAULT 0 CHECK (quantidade >= 0),
+    UNIQUE (nome, categoria)
+)
+
+-- Histórico de movimentações
+movimentacoes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    produto_id  INTEGER NOT NULL,
+    tipo        TEXT    NOT NULL CHECK (tipo IN ('ENTRADA','SAIDA')),
+    quantidade  INTEGER NOT NULL CHECK (quantidade > 0),
+    data_hora   TEXT    NOT NULL,
+    FOREIGN KEY (produto_id) REFERENCES produtos(id)
+)
+```
+
+---
+
+##  Funcionalidades testadas
+
+Todos os cenários abaixo foram testados e aprovados antes do release:
+
+- [x] Cadastro com validação de campos
+- [x] Bloqueio de produto duplicado (mesmo nome + categoria)
+- [x] Entrada e saída com atualização atômica do banco
+- [x] Bloqueio de saída com estoque insuficiente
+- [x] Busca parcial por nome (case-insensitive)
+- [x] Filtro por categoria com total financeiro
+- [x] Histórico geral e filtrado por produto
+- [x] Exportação CSV compatível com Excel brasileiro
+- [x] Paginação na listagem
+
+---
+
+##  Requisitos
+
+- Python 3.8 ou superior
+- Nenhuma biblioteca externa necessária (apenas módulos padrão: `sqlite3`, `csv`, `logging`, `datetime`, `contextlib`)
