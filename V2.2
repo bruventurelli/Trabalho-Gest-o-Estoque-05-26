@@ -1,0 +1,727 @@
+
+
+import sqlite3
+import csv
+import logging
+from datetime import datetime
+from contextlib import contextmanager
+
+# ── Configuração ──────────────────────────────────────────────────────────────
+DB_NAME  = "estoque.db"
+LOG_FILE = "estoque.log"
+PAGE_SIZE = 20          # itens por página na listagem
+
+# ── Logging — erros ficam gravados em arquivo ──────────────────────────────────
+logging.basicConfig(
+    filename=LOG_FILE,
+    level=logging.ERROR,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
+
+# =============================================================================
+#  CONEXÃO — context manager garante fechamento mesmo em exceções
+# =============================================================================
+
+@contextmanager
+def get_conn():
+    """
+    Uso:
+        with get_conn() as conn:
+            conn.execute(...)
+    Faz commit automático ao sair sem erros; rollback se houver exceção.
+    """
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")   # ativa integridade referencial
+    try:
+        yield conn
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        logging.error("Erro na transação: %s", exc, exc_info=True)
+        raise
+    finally:
+        conn.close()
+
+
+# =============================================================================
+#  INICIALIZAÇÃO DO BANCO
+# =============================================================================
+
+def inicializar_banco():
+    """Cria tabelas e índices se ainda não existirem."""
+    with get_conn() as conn:
+        # Produtos
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS produtos (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                nome       TEXT    NOT NULL,
+                categoria  TEXT    NOT NULL,
+                preco      REAL    NOT NULL CHECK (preco >= 0),
+                quantidade INTEGER NOT NULL DEFAULT 0 CHECK (quantidade >= 0),
+                UNIQUE (nome, categoria)          -- NOVO: impede duplicatas
+            )
+        """)
+
+        # Histórico de movimentações
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS movimentacoes (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                produto_id  INTEGER NOT NULL,
+                tipo        TEXT    NOT NULL CHECK (tipo IN ('ENTRADA','SAIDA')),
+                quantidade  INTEGER NOT NULL CHECK (quantidade > 0),
+                data_hora   TEXT    NOT NULL,
+                FOREIGN KEY (produto_id) REFERENCES produtos(id)
+            )
+        """)
+
+        # NOVO: índices para acelerar buscas em produção
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_produtos_nome
+            ON produtos (nome COLLATE NOCASE)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_produtos_categoria
+            ON produtos (categoria COLLATE NOCASE)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_mov_produto
+            ON movimentacoes (produto_id)
+        """)
+
+
+# =============================================================================
+#  FUNÇÕES OBRIGATÓRIAS (mesma assinatura da v1, corrigidas internamente)
+# =============================================================================
+
+def cadastrar_produto(nome, categoria, preco, quantidade):
+    """Insere um novo produto. Retorna o ID ou None em caso de erro."""
+    # Validações
+    if not nome.strip():
+        print("  [ERRO] O nome do produto não pode ser vazio.")
+        return None
+    if not categoria.strip():
+        print("  [ERRO] A categoria não pode ser vazia.")
+        return None
+    if preco < 0:
+        print("  [ERRO] O preço não pode ser negativo.")
+        return None
+    if quantidade < 0:
+        print("  [ERRO] A quantidade inicial não pode ser negativa.")
+        return None
+
+    try:
+        with get_conn() as conn:
+            # CORREÇÃO: tudo na mesma transação — INSERT produto + INSERT movimentação
+            cur = conn.execute(
+                "INSERT INTO produtos (nome, categoria, preco, quantidade) "
+                "VALUES (?, ?, ?, ?)",
+                (nome.strip(), categoria.strip(), round(preco, 2), int(quantidade))
+            )
+            produto_id = cur.lastrowid
+
+            if quantidade > 0:
+                conn.execute(
+                    "INSERT INTO movimentacoes (produto_id, tipo, quantidade, data_hora) "
+                    "VALUES (?, 'ENTRADA', ?, ?)",
+                    (produto_id, int(quantidade),
+                     datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                )
+
+        print(f"\n  [OK] Produto '{nome}' cadastrado! (ID: {produto_id})")
+        return produto_id
+
+    except sqlite3.IntegrityError:
+        # NOVO: captura violação de UNIQUE (nome + categoria duplicados)
+        print(f"  [ERRO] Produto '{nome}' na categoria '{categoria}' já existe no sistema.")
+        return None
+
+
+def registrar_entrada(produto_id, quantidade):
+    """Aumenta o saldo e registra no histórico — tudo na mesma transação."""
+    if quantidade <= 0:
+        print("  [ERRO] A quantidade de entrada deve ser maior que zero.")
+        return
+
+    try:
+        with get_conn() as conn:
+            produto = conn.execute(
+                "SELECT * FROM produtos WHERE id = ?", (produto_id,)
+            ).fetchone()
+
+            if produto is None:
+                print(f"  [ERRO] Produto ID {produto_id} não encontrado.")
+                return
+
+            novo_saldo = produto["quantidade"] + quantidade
+
+            # CORREÇÃO: UPDATE + INSERT na mesma conexão/transação
+            conn.execute(
+                "UPDATE produtos SET quantidade = ? WHERE id = ?",
+                (novo_saldo, produto_id)
+            )
+            conn.execute(
+                "INSERT INTO movimentacoes (produto_id, tipo, quantidade, data_hora) "
+                "VALUES (?, 'ENTRADA', ?, ?)",
+                (produto_id, quantidade, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            )
+
+        print(f"\n  [OK] +{quantidade} unidade(s) de '{produto['nome']}'. Saldo: {novo_saldo}.")
+
+    except Exception as exc:
+        logging.error("registrar_entrada(%s, %s): %s", produto_id, quantidade, exc)
+        print("  [ERRO] Falha ao registrar entrada. Consulte o log.")
+
+
+def registrar_saida(produto_id, quantidade):
+    """Reduz o saldo com verificação de suficiência — transação atômica."""
+    if quantidade <= 0:
+        print("  [ERRO] A quantidade de saída deve ser maior que zero.")
+        return
+
+    try:
+        with get_conn() as conn:
+            produto = conn.execute(
+                "SELECT * FROM produtos WHERE id = ?", (produto_id,)
+            ).fetchone()
+
+            if produto is None:
+                print(f"  [ERRO] Produto ID {produto_id} não encontrado.")
+                return
+
+            if quantidade > produto["quantidade"]:
+                print(f"  [ERRO] Estoque insuficiente. "
+                      f"Disponível: {produto['quantidade']} unidade(s).")
+                return
+
+            novo_saldo = produto["quantidade"] - quantidade
+
+            conn.execute(
+                "UPDATE produtos SET quantidade = ? WHERE id = ?",
+                (novo_saldo, produto_id)
+            )
+            conn.execute(
+                "INSERT INTO movimentacoes (produto_id, tipo, quantidade, data_hora) "
+                "VALUES (?, 'SAIDA', ?, ?)",
+                (produto_id, quantidade, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            )
+
+        print(f"\n  [OK] -{quantidade} unidade(s) de '{produto['nome']}'. Saldo: {novo_saldo}.")
+
+    except Exception as exc:
+        logging.error("registrar_saida(%s, %s): %s", produto_id, quantidade, exc)
+        print("  [ERRO] Falha ao registrar saída. Consulte o log.")
+
+
+def consultar_estoque(produto_id):
+    """Exibe ficha completa do produto."""
+    with get_conn() as conn:
+        p = conn.execute(
+            "SELECT * FROM produtos WHERE id = ?", (produto_id,)
+        ).fetchone()
+
+    if p is None:
+        print(f"  [ERRO] Produto ID {produto_id} não encontrado.")
+        return None
+
+    print("\n  " + "─" * 42)
+    print(f"  ID         : {p['id']}")
+    print(f"  Nome       : {p['nome']}")
+    print(f"  Categoria  : {p['categoria']}")
+    print(f"  Preço      : R$ {p['preco']:.2f}")
+    print(f"  Quantidade : {p['quantidade']} unidade(s)")
+    print(f"  Valor em estoque: R$ {p['preco'] * p['quantidade']:.2f}")
+    print("  " + "─" * 42)
+    return dict(p)
+
+
+def alertar_estoque_baixo(limite):
+    """Lista produtos com saldo abaixo do limite."""
+    if limite < 0:
+        print("  [ERRO] O limite não pode ser negativo.")
+        return
+
+    with get_conn() as conn:
+        criticos = conn.execute(
+            "SELECT * FROM produtos WHERE quantidade < ? ORDER BY quantidade ASC",
+            (limite,)
+        ).fetchall()
+
+    if not criticos:
+        print(f"\n  [OK] Nenhum produto abaixo de {limite} unidade(s).")
+        return
+
+    print(f"\n  ⚠  ALERTA — Estoque crítico (< {limite} unidade(s)):")
+    print("  " + "─" * 52)
+    print(f"  {'ID':<6} {'Nome':<22} {'Categoria':<14} {'Qtd':>5}")
+    print("  " + "─" * 52)
+    for p in criticos:
+        print(f"  {p['id']:<6} {p['nome']:<22} {p['categoria']:<14} {p['quantidade']:>5}")
+    print("  " + "─" * 52)
+    print(f"  {len(criticos)} produto(s) em situação crítica.")
+
+
+# =============================================================================
+#  NOVAS FUNCIONALIDADES
+# =============================================================================
+
+def buscar_produto(termo):
+    """
+    NOVO — Busca produtos pelo nome (parcial, sem diferenciar maiúsculas).
+    Útil para o dono que não lembra o ID mas sabe o nome.
+    """
+    with get_conn() as conn:
+        resultados = conn.execute(
+            "SELECT * FROM produtos WHERE nome LIKE ? ORDER BY nome COLLATE NOCASE",
+            (f"%{termo}%",)
+        ).fetchall()
+
+    if not resultados:
+        print(f"\n  [INFO] Nenhum produto encontrado para '{termo}'.")
+        return []
+
+    print(f"\n  Resultados para '{termo}':")
+    print("  " + "─" * 60)
+    print(f"  {'ID':<6} {'Nome':<22} {'Categoria':<14} {'Preço':>10} {'Qtd':>6}")
+    print("  " + "─" * 60)
+    for p in resultados:
+        print(f"  {p['id']:<6} {p['nome']:<22} {p['categoria']:<14} "
+              f"R$ {p['preco']:>7.2f} {p['quantidade']:>6}")
+    print("  " + "─" * 60)
+    return [dict(p) for p in resultados]
+
+
+def filtrar_por_categoria(categoria):
+    """
+    NOVO — Lista todos os produtos de uma categoria.
+    Útil para o dono ver só 'Limpeza' ou só 'Alimentos'.
+    """
+    with get_conn() as conn:
+        produtos = conn.execute(
+            "SELECT * FROM produtos WHERE categoria LIKE ? "
+            "ORDER BY nome COLLATE NOCASE",
+            (f"%{categoria}%",)
+        ).fetchall()
+
+    if not produtos:
+        print(f"\n  [INFO] Nenhum produto na categoria '{categoria}'.")
+        return
+
+    print(f"\n  Categoria: {categoria}")
+    print("  " + "─" * 60)
+    print(f"  {'ID':<6} {'Nome':<24} {'Preço':>10} {'Qtd':>6} {'Valor':>12}")
+    print("  " + "─" * 60)
+    total = 0.0
+    for p in produtos:
+        valor = p['preco'] * p['quantidade']
+        total += valor
+        print(f"  {p['id']:<6} {p['nome']:<24} "
+              f"R$ {p['preco']:>7.2f} {p['quantidade']:>6} "
+              f"R$ {valor:>9.2f}")
+    print("  " + "─" * 60)
+    print(f"  {len(produtos)} produto(s)  |  Valor total na categoria: R$ {total:.2f}")
+
+
+def editar_produto(produto_id):
+    """
+    NOVO — Permite corrigir nome, categoria e preço de um produto existente.
+    Campo em branco mantém o valor atual.
+    """
+    with get_conn() as conn:
+        p = conn.execute(
+            "SELECT * FROM produtos WHERE id = ?", (produto_id,)
+        ).fetchone()
+
+    if p is None:
+        print(f"  [ERRO] Produto ID {produto_id} não encontrado.")
+        return
+
+    print(f"\n  Editando: {p['nome']} (deixe em branco para manter o valor atual)")
+    print("  " + "─" * 42)
+
+    novo_nome      = input(f"  Nome [{p['nome']}]: ").strip() or p['nome']
+    nova_categoria = input(f"  Categoria [{p['categoria']}]: ").strip() or p['categoria']
+
+    # Preço — valida apenas se o usuário digitou algo
+    while True:
+        entrada = input(f"  Preço [R$ {p['preco']:.2f}]: ").strip()
+        if not entrada:
+            novo_preco = p['preco']
+            break
+        try:
+            novo_preco = float(entrada)
+            if novo_preco < 0:
+                print("  [ERRO] Preço não pode ser negativo.")
+                continue
+            break
+        except ValueError:
+            print("  [ERRO] Digite um número válido.")
+
+    try:
+        with get_conn() as conn:
+            conn.execute(
+                "UPDATE produtos SET nome = ?, categoria = ?, preco = ? WHERE id = ?",
+                (novo_nome, nova_categoria, round(novo_preco, 2), produto_id)
+            )
+        print(f"\n  [OK] Produto ID {produto_id} atualizado com sucesso.")
+    except sqlite3.IntegrityError:
+        print(f"  [ERRO] Já existe um produto '{novo_nome}' na categoria '{nova_categoria}'.")
+
+
+def remover_produto(produto_id):
+    """
+    NOVO — Remove o produto após confirmação explícita.
+    O histórico de movimentações é mantido (produto_id vira órfão — comportamento esperado).
+    """
+    with get_conn() as conn:
+        p = conn.execute(
+            "SELECT * FROM produtos WHERE id = ?", (produto_id,)
+        ).fetchone()
+
+    if p is None:
+        print(f"  [ERRO] Produto ID {produto_id} não encontrado.")
+        return
+
+    print(f"\n  Produto: {p['nome']} | Qtd: {p['quantidade']} | Preço: R$ {p['preco']:.2f}")
+    confirmacao = input("  ⚠  CONFIRMA a exclusão? Digite o nome do produto para confirmar: ").strip()
+
+    if confirmacao != p['nome']:
+        print("  [CANCELADO] Nome não confere. Nenhuma alteração foi feita.")
+        return
+
+    with get_conn() as conn:
+        conn.execute("DELETE FROM produtos WHERE id = ?", (produto_id,))
+
+    print(f"\n  [OK] Produto '{p['nome']}' removido do sistema.")
+
+
+# =============================================================================
+#  RELATÓRIOS (corrigidos e expandidos)
+# =============================================================================
+
+def relatorio_financeiro():
+    """Valor total investido no estoque com ranking por valor."""
+    with get_conn() as conn:
+        linhas = conn.execute(
+            "SELECT nome, preco, quantidade, (preco * quantidade) AS subtotal "
+            "FROM produtos ORDER BY subtotal DESC"
+        ).fetchall()
+        total = conn.execute(
+            "SELECT COALESCE(SUM(preco * quantidade), 0) AS total FROM produtos"
+        ).fetchone()["total"]
+
+    if not linhas:
+        print("\n  [INFO] Nenhum produto cadastrado.")
+        return
+
+    print("\n  " + "─" * 62)
+    print(f"  {'Produto':<24} {'Preço':>10} {'Qtd':>6} {'Subtotal':>14}")
+    print("  " + "─" * 62)
+    for l in linhas:
+        print(f"  {l['nome']:<24} R$ {l['preco']:>7.2f} "
+              f"{l['quantidade']:>6} R$ {l['subtotal']:>11.2f}")
+    print("  " + "─" * 62)
+    print(f"  VALOR TOTAL EM ESTOQUE: R$ {total:>11.2f}")
+    print("  " + "─" * 62)
+
+
+def exportar_csv(arquivo="relatorio_estoque.csv"):
+    """Exporta estoque completo para CSV compatível com Excel (BR)."""
+    with get_conn() as conn:
+        produtos = conn.execute(
+            "SELECT id, nome, categoria, preco, quantidade, "
+            "(preco * quantidade) AS valor_total "
+            "FROM produtos ORDER BY id"
+        ).fetchall()
+
+    if not produtos:
+        print("\n  [INFO] Nenhum produto para exportar.")
+        return
+
+    with open(arquivo, mode="w", newline="", encoding="utf-8-sig") as f:
+        # utf-8-sig: BOM que o Excel BR reconhece corretamente
+        writer = csv.writer(f, delimiter=";")
+        writer.writerow(["ID", "Nome", "Categoria", "Preço (R$)",
+                         "Quantidade", "Valor Total (R$)"])
+        for p in produtos:
+            writer.writerow([p["id"], p["nome"], p["categoria"],
+                             f"{p['preco']:.2f}".replace(".", ","),
+                             p["quantidade"],
+                             f"{p['valor_total']:.2f}".replace(".", ",")])
+
+    print(f"\n  [OK] '{arquivo}' gerado com {len(produtos)} produto(s).")
+    print("  Abra direto no Excel — separador ';' e vírgula decimal já configurados.")
+
+
+def ver_historico(produto_id=None, limite=30):
+    """
+    Exibe histórico de movimentações.
+    NOVO: aceita filtro por produto_id e limite configurável.
+    """
+    with get_conn() as conn:
+        if produto_id:
+            movs = conn.execute("""
+                SELECT m.id, m.data_hora, m.tipo, m.quantidade, p.nome AS produto
+                FROM movimentacoes m
+                LEFT JOIN produtos p ON p.id = m.produto_id
+                WHERE m.produto_id = ?
+                ORDER BY m.id DESC LIMIT ?
+            """, (produto_id, limite)).fetchall()
+        else:
+            movs = conn.execute("""
+                SELECT m.id, m.data_hora, m.tipo, m.quantidade, p.nome AS produto
+                FROM movimentacoes m
+                LEFT JOIN produtos p ON p.id = m.produto_id
+                ORDER BY m.id DESC LIMIT ?
+            """, (limite,)).fetchall()
+
+    if not movs:
+        print("\n  [INFO] Nenhuma movimentação encontrada.")
+        return
+
+    filtro_txt = f"produto ID {produto_id}" if produto_id else "todos os produtos"
+    print(f"\n  Últimas {len(movs)} movimentações ({filtro_txt}):")
+    print("  " + "─" * 67)
+    print(f"  {'Data/Hora':<20} {'Tipo':<8} {'Qtd':>5}  Produto")
+    print("  " + "─" * 67)
+    for m in movs:
+        produto = m["produto"] or "(produto removido)"
+        sinal = "+" if m["tipo"] == "ENTRADA" else "-"
+        print(f"  {m['data_hora']:<20} {m['tipo']:<8} "
+              f"{sinal}{m['quantidade']:>4}  {produto}")
+    print("  " + "─" * 67)
+
+
+# =============================================================================
+#  INTERFACE — listagem com paginação
+# =============================================================================
+
+def listar_todos(pagina=1):
+    """
+    NOVO: paginação — evita travar o terminal com muitos produtos.
+    """
+    with get_conn() as conn:
+        total = conn.execute(
+            "SELECT COUNT(*) AS c FROM produtos"
+        ).fetchone()["c"]
+
+        if total == 0:
+            print("\n  [INFO] Nenhum produto cadastrado.")
+            return
+
+        total_paginas = max(1, -(-total // PAGE_SIZE))   # divisão teto
+        pagina = max(1, min(pagina, total_paginas))
+        offset = (pagina - 1) * PAGE_SIZE
+
+        produtos = conn.execute(
+            "SELECT * FROM produtos ORDER BY id LIMIT ? OFFSET ?",
+            (PAGE_SIZE, offset)
+        ).fetchall()
+
+    print(f"\n  Página {pagina}/{total_paginas} — {total} produto(s) no total")
+    print("  " + "─" * 67)
+    print(f"  {'ID':<6} {'Nome':<22} {'Categoria':<14} {'Preço':>10} {'Qtd':>6}")
+    print("  " + "─" * 67)
+    for p in produtos:
+        print(f"  {p['id']:<6} {p['nome']:<22} {p['categoria']:<14} "
+              f"R$ {p['preco']:>7.2f} {p['quantidade']:>6}")
+    print("  " + "─" * 67)
+
+    if total_paginas > 1:
+        print(f"  [P] Próxima  [A] Anterior  [I] Ir para página  [0] Voltar")
+        nav = input("  Navegar: ").strip().upper()
+        if nav == "P" and pagina < total_paginas:
+            listar_todos(pagina + 1)
+        elif nav == "A" and pagina > 1:
+            listar_todos(pagina - 1)
+        elif nav == "I":
+            try:
+                pg = int(input("  Página: "))
+                listar_todos(pg)
+            except ValueError:
+                pass
+
+
+def ler_inteiro(mensagem, minimo=None, maximo=None):
+    while True:
+        try:
+            valor = int(input(mensagem))
+            if minimo is not None and valor < minimo:
+                print(f"  [ERRO] Mínimo: {minimo}.")
+                continue
+            if maximo is not None and valor > maximo:
+                print(f"  [ERRO] Máximo: {maximo}.")
+                continue
+            return valor
+        except ValueError:
+            print("  [ERRO] Digite um número inteiro.")
+
+
+def ler_float(mensagem, minimo=None):
+    while True:
+        try:
+            valor = float(input(mensagem))
+            if minimo is not None and valor < minimo:
+                print(f"  [ERRO] Mínimo: {minimo}.")
+                continue
+            return valor
+        except ValueError:
+            print("  [ERRO] Digite um número válido.")
+
+
+def cabecalho():
+    print("\n" + "═" * 55)
+    print("       SISTEMA DE GESTÃO DE ESTOQUE  v2.0")
+    print("═" * 55)
+
+
+def menu_principal():
+    print("""
+  ╔══════════════════════════════════════════╗
+  ║            MENU PRINCIPAL                ║
+  ╠══════════════════════════════════════════╣
+  ║  PRODUTOS                                ║
+  ║   1 – Cadastrar produto                  ║
+  ║   2 – Editar produto            [NOVO]   ║
+  ║   3 – Remover produto           [NOVO]   ║
+  ║   4 – Buscar por nome           [NOVO]   ║
+  ║   5 – Filtrar por categoria     [NOVO]   ║
+  ║   6 – Listar todos (paginado)   [NOVO]   ║
+  ║   7 – Consultar produto                  ║
+  ╠══════════════════════════════════════════╣
+  ║  ESTOQUE                                 ║
+  ║   8 – Registrar entrada                  ║
+  ║   9 – Registrar saída                    ║
+  ║  10 – Alerta de estoque baixo            ║
+  ╠══════════════════════════════════════════╣
+  ║  RELATÓRIOS                              ║
+  ║  11 – Relatório financeiro               ║
+  ║  12 – Exportar para CSV                  ║
+  ║  13 – Histórico de movimentações         ║
+  ╠══════════════════════════════════════════╣
+  ║   0 – Sair                               ║
+  ╚══════════════════════════════════════════╝""")
+    return input("  Escolha: ").strip()
+
+
+# =============================================================================
+#  DADOS DE EXEMPLO (só se o banco estiver vazio)
+# =============================================================================
+
+def carregar_dados_exemplo_se_vazio():
+    with get_conn() as conn:
+        total = conn.execute("SELECT COUNT(*) AS c FROM produtos").fetchone()["c"]
+    if total == 0:
+        print("\n  Banco vazio — carregando dados de exemplo...")
+        cadastrar_produto("Arroz 5 kg",        "Alimentos", 12.90, 50)
+        cadastrar_produto("Feijão 1 kg",       "Alimentos",  8.50, 30)
+        cadastrar_produto("Óleo de Soja 1 L",  "Alimentos",  9.00,  4)
+        cadastrar_produto("Detergente 500 ml", "Limpeza",    3.75, 80)
+        cadastrar_produto("Água Sanitária",    "Limpeza",    4.20,  2)
+
+
+# =============================================================================
+#  LOOP PRINCIPAL
+# =============================================================================
+
+def main():
+    cabecalho()
+    inicializar_banco()
+    carregar_dados_exemplo_se_vazio()
+    print("  Sistema pronto.\n")
+
+    while True:
+        opcao = menu_principal()
+
+        # ── Produtos ─────────────────────────────────────────────────
+        if opcao == "1":
+            print("\n  --- CADASTRO ---")
+            nome       = input("  Nome       : ")
+            categoria  = input("  Categoria  : ")
+            preco      = ler_float("  Preço R$   : ", minimo=0)
+            quantidade = ler_inteiro("  Quantidade : ", minimo=0)
+            cadastrar_produto(nome, categoria, preco, quantidade)
+
+        elif opcao == "2":
+            print("\n  --- EDITAR PRODUTO ---")
+            pid = ler_inteiro("  ID do produto: ", minimo=1)
+            editar_produto(pid)
+
+        elif opcao == "3":
+            print("\n  --- REMOVER PRODUTO ---")
+            pid = ler_inteiro("  ID do produto: ", minimo=1)
+            remover_produto(pid)
+
+        elif opcao == "4":
+            print("\n  --- BUSCAR POR NOME ---")
+            termo = input("  Termo de busca: ").strip()
+            if termo:
+                buscar_produto(termo)
+
+        elif opcao == "5":
+            print("\n  --- FILTRAR POR CATEGORIA ---")
+            cat = input("  Categoria: ").strip()
+            if cat:
+                filtrar_por_categoria(cat)
+
+        elif opcao == "6":
+            listar_todos()
+
+        elif opcao == "7":
+            print("\n  --- CONSULTAR PRODUTO ---")
+            pid = ler_inteiro("  ID do produto: ", minimo=1)
+            consultar_estoque(pid)
+
+        # ── Estoque ──────────────────────────────────────────────────
+        elif opcao == "8":
+            print("\n  --- ENTRADA DE ESTOQUE ---")
+            listar_todos()
+            pid = ler_inteiro("  ID do produto: ", minimo=1)
+            qtd = ler_inteiro("  Quantidade (+): ", minimo=1)
+            registrar_entrada(pid, qtd)
+
+        elif opcao == "9":
+            print("\n  --- SAÍDA DE ESTOQUE ---")
+            listar_todos()
+            pid = ler_inteiro("  ID do produto: ", minimo=1)
+            qtd = ler_inteiro("  Quantidade (-): ", minimo=1)
+            registrar_saida(pid, qtd)
+
+        elif opcao == "10":
+            print("\n  --- ALERTA DE ESTOQUE BAIXO ---")
+            limite = ler_inteiro("  Quantidade mínima aceitável: ", minimo=0)
+            alertar_estoque_baixo(limite)
+
+        # ── Relatórios ───────────────────────────────────────────────
+        elif opcao == "11":
+            print("\n  --- RELATÓRIO FINANCEIRO ---")
+            relatorio_financeiro()
+
+        elif opcao == "12":
+            print("\n  --- EXPORTAR CSV ---")
+            exportar_csv()
+
+        elif opcao == "13":
+            print("\n  --- HISTÓRICO DE MOVIMENTAÇÕES ---")
+            filtrar = input("  Filtrar por produto? ID (ou ENTER para todos): ").strip()
+            lim = ler_inteiro("  Quantas linhas exibir? [30]: ", minimo=1) \
+                  if input("  Alterar limite? (s/N): ").strip().lower() == "s" else 30
+            ver_historico(
+                produto_id=int(filtrar) if filtrar.isdigit() else None,
+                limite=lim
+            )
+
+        elif opcao == "0":
+            print("\n  Até logo!\n")
+            break
+
+        else:
+            print("\n  [ERRO] Opção inválida.")
+
+        input("\n  Pressione ENTER para continuar...")
+
+
+if __name__ == "__main__":
+    main()
